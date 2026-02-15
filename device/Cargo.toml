@@ -1,0 +1,18 @@
+[package]
+name = "coordinator"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+axum = { workspace = true, features = ["json", "query", "http1", "tokio", "tracing"] }
+tower-http = { workspace = true, features = ["compression-zstd"] }
+jni.workspace = true
+jpeg-encoder.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt", "net", "sync"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+libc.workspace = true
