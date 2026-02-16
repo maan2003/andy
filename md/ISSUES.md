@@ -1,5 +1,7 @@
 # Issues
 
+## use @e1 reference instead of clicking by text
+
 ## accessiblity tree doesn't update in webview
 
 ## auto wait is not perfect
