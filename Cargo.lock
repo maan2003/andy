@@ -9,6 +9,7 @@ dependencies = [
  "anyhow",
  "argh",
  "bytes",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

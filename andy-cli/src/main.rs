@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use argh::FromArgs;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,8 @@ enum Command {
     Start(StartCmd),
     Install(InstallCmd),
     Version(VersionCmd),
+    SyncLogsToFile(SyncLogsToFileCmd),
+    LogDaemon(LogDaemonCmd),
 }
 
 /// show screen info
@@ -178,6 +180,21 @@ struct InstallCmd {}
 #[argh(subcommand, name = "version")]
 struct VersionCmd {}
 
+/// start syncing JS console logs (ReactNativeJS) to a file in the background
+#[derive(FromArgs)]
+#[argh(subcommand, name = "sync-logs-to-file")]
+struct SyncLogsToFileCmd {}
+
+/// internal: log daemon process
+#[derive(FromArgs)]
+#[argh(subcommand, name = "_log-daemon")]
+struct LogDaemonCmd {
+    #[argh(positional)]
+    uid: u32,
+    #[argh(positional)]
+    log_file: PathBuf,
+}
+
 /// Check if the server is reachable; if not, auto-start it.
 /// Also ensures the screen exists (saving a round-trip).
 async fn ensure_server(socket: &Path, screen: &str, package: &str) -> Result<Client> {
@@ -232,6 +249,9 @@ async fn main() -> Result<()> {
     if let Command::Version(_) = &cli.command {
         println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if let Command::LogDaemon(cmd) = cli.command {
+        return run_log_daemon(cmd.uid, &cmd.log_file);
     }
     if let Command::Install(_) = cli.command {
         let skill_dir = PathBuf::from(".agents/skills/android-emulator");
@@ -344,8 +364,96 @@ async fn main() -> Result<()> {
                 .wait_for_idle(screen, cmd.idle_timeout_ms, cmd.global_timeout_ms)
                 .await?;
         }
-        Command::Start(_) | Command::Install(_) | Command::Version(_) => unreachable!(),
+        Command::SyncLogsToFile(_) => {
+            let info = client.info(screen).await?;
+            let uid = resolve_package_uid(&info.assigned_package)?;
+            let state_dir = PathBuf::from(std::env::var("HOME").expect("HOME not set"))
+                .join(".local/state");
+            let log_file = state_dir.join(format!("andy-log-{}.txt", std::process::id()));
+            let exe = std::env::current_exe().context("failed to get current exe")?;
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                std::process::Command::new(exe)
+                    .args(["_log-daemon", &uid.to_string(), &log_file.to_string_lossy()])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .pre_exec(|| { libc::setsid(); Ok(()) })
+                    .spawn()
+                    .context("failed to spawn log daemon")?;
+            }
+            println!("Logging to {}", log_file.display());
+        }
+        Command::Start(_) | Command::Install(_) | Command::Version(_) | Command::LogDaemon(_) => unreachable!(),
     }
 
     Ok(())
+}
+
+fn run_log_daemon(uid: u32, log_file: &Path) -> Result<()> {
+    use std::time::{Duration, SystemTime};
+
+    let file = fs::File::create(log_file)
+        .with_context(|| format!("failed to create {}", log_file.display()))?;
+    let mut child = std::process::Command::new("adb")
+        .args([
+            "logcat",
+            &format!("--uid={uid}"),
+            "-s",
+            "ReactNativeJS:*",
+            "-v",
+            "time",
+        ])
+        .stdout(file)
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .context("failed to spawn adb logcat")?;
+
+    let idle_timeout = Duration::from_secs(10 * 60);
+    let poll_interval = Duration::from_secs(30);
+
+    loop {
+        std::thread::sleep(poll_interval);
+
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+
+        let idle = fs::metadata(log_file).ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+            .unwrap_or(Duration::ZERO);
+
+        if idle >= idle_timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_package_uid(package: &str) -> Result<u32> {
+    let output = std::process::Command::new("adb")
+        .args(["shell", "pm", "list", "packages", "-U", package])
+        .output()
+        .context("failed to run adb shell pm list packages")?;
+    if !output.status.success() {
+        bail!("adb shell pm list packages failed");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        // format: "package:com.fedi.dev00 uid:10117"
+        if let Some(rest) = line.strip_prefix("package:") {
+            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+            if parts.first().map(|p| p.trim()) == Some(package) {
+                if let Some(uid_str) = parts.get(1).and_then(|s| s.strip_prefix("uid:")) {
+                    return uid_str.trim().parse::<u32>().context("failed to parse uid");
+                }
+            }
+        }
+    }
+    bail!("could not resolve uid for package {package}");
 }
