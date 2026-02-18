@@ -7,6 +7,7 @@ pub struct CreateScreenRequest {
     pub height: i32,
     pub dpi: i32,
     pub timeout_secs: u64,
+    pub package: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -16,6 +17,7 @@ pub struct ScreenInfo {
     pub width: i32,
     pub height: i32,
     pub dpi: i32,
+    pub assigned_package: String,
 }
 
 #[derive(Serialize)]
@@ -43,20 +45,10 @@ pub struct KeyRequest {
     pub keycode: i32,
 }
 
-#[derive(Serialize)]
-pub struct LaunchRequest {
-    pub package: String,
-}
-
-#[derive(Serialize)]
-pub struct StopRequest {
-    pub package: String,
-}
 
 #[derive(Serialize)]
 pub struct OpenUrlRequest {
     pub url: String,
-    pub package: String,
 }
 
 #[derive(Serialize)]

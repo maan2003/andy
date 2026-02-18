@@ -34,6 +34,7 @@ impl Client {
         Ok(resp.bytes().await?)
     }
 
+
     async fn post_json(&self, path: &str, json: &impl serde::Serialize) -> Result<()> {
         let resp = self
             .http
@@ -49,7 +50,7 @@ impl Client {
         Ok(())
     }
 
-    pub async fn ensure_screen(&self, name: &str) -> Result<()> {
+    pub async fn ensure_screen(&self, name: &str, package: &str) -> Result<()> {
         self.post_json(
             "/screens",
             &CreateScreenRequest {
@@ -58,6 +59,7 @@ impl Client {
                 height: 1920,
                 dpi: 240,
                 timeout_secs: 300,
+                package: package.to_string(),
             },
         )
         .await
@@ -176,19 +178,12 @@ impl Client {
             .await
     }
 
-    pub async fn launch(&self, screen: &str, package: &str, no_wait: bool) -> Result<Option<u64>> {
+    pub async fn launch(&self, screen: &str, no_wait: bool) -> Result<Option<u64>> {
         let mut url = format!("/screens/{screen}/launch");
         if no_wait {
             url.push_str("?no_wait=true");
         }
-        let resp = self
-            .http
-            .post(format!("http://localhost{url}"))
-            .json(&LaunchRequest {
-                package: package.to_string(),
-            })
-            .send()
-            .await?;
+        let resp = self.http.post(format!("http://localhost{url}")).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -202,33 +197,20 @@ impl Client {
         Ok(wait_ms)
     }
 
-    pub async fn stop(&self, screen: &str, package: &str) -> Result<()> {
-        self.post_json(
-            &format!("/screens/{screen}/stop"),
-            &StopRequest {
-                package: package.to_string(),
-            },
-        )
-        .await
+    pub async fn stop(&self, screen: &str) -> Result<()> {
+        let _ = self.http.post(format!("http://localhost/screens/{screen}/stop")).send().await?;
+        Ok(())
     }
 
-    pub async fn reset(&self, screen: &str, package: &str) -> Result<()> {
-        self.post_json(
-            &format!("/screens/{screen}/reset"),
-            &StopRequest {
-                package: package.to_string(),
-            },
-        )
-        .await
+    pub async fn reset(&self, screen: &str) -> Result<()> {
+        let _ = self.http.post(format!("http://localhost/screens/{screen}/reset")).send().await?;
+        Ok(())
     }
 
-    pub async fn open_url(&self, screen: &str, url: &str, package: &str) -> Result<()> {
+    pub async fn open_url(&self, screen: &str, url: &str) -> Result<()> {
         self.post_json(
             &format!("/screens/{screen}/open-url"),
-            &OpenUrlRequest {
-                url: url.to_string(),
-                package: package.to_string(),
-            },
+            &OpenUrlRequest { url: url.to_string() },
         )
         .await
     }

@@ -54,8 +54,11 @@ cargo run -p andy-cli -- a11y
 cargo run -p andy-cli -- tap 540,960
 cargo run -p andy-cli -- tap "Login"
 
-# Launch a package
-ANDY_PACKAGE=com.fedi cargo run -p andy-cli -- launch
+# Bind a package to this screen at creation (full or prefix)
+cargo run -p andy-cli -- --package com.fedi.dev launch
+
+# Subsequent launches (uses bound package)
+cargo run -p andy-cli -- launch
 ```
 
 Socket is always `~/.local/state/andy.sock`.

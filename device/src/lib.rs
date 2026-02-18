@@ -24,6 +24,7 @@ struct VirtualScreen {
     last_heartbeat: Instant,
     timeout_secs: u64,
     last_interaction: Option<Instant>,
+    assigned_package: String,
 }
 
 struct ServerState {
@@ -70,6 +71,7 @@ struct ScreenInfo {
     width: i32,
     height: i32,
     dpi: i32,
+    assigned_package: String,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +81,7 @@ struct CreateScreenRequest {
     height: i32,
     dpi: i32,
     timeout_secs: u64,
+    package: String,
 }
 
 #[derive(Deserialize)]
@@ -109,18 +112,8 @@ struct KeyRequest {
 #[derive(Deserialize)]
 struct OpenUrlRequest {
     url: String,
-    package: String,
 }
 
-#[derive(Deserialize)]
-struct LaunchRequest {
-    package: String,
-}
-
-#[derive(Deserialize)]
-struct StopRequest {
-    package: String,
-}
 
 #[derive(Deserialize)]
 struct WaitForIdleRequest {
@@ -185,6 +178,7 @@ impl ServerState {
                 width: screen.width,
                 height: screen.height,
                 dpi: screen.dpi,
+                assigned_package: screen.assigned_package.clone(),
             });
         }
 
@@ -219,6 +213,16 @@ impl ServerState {
         })?;
 
         let (global, display_id) = instance;
+        let assigned_package = {
+            let p = &req.package;
+            let installed = self.list_installed_packages(p)?;
+            if installed.contains(p) {
+                p.clone()
+            } else {
+                self.allocate_from_prefix(p, &installed)?
+            }
+        };
+
         let screen = VirtualScreen {
             display_id,
             instance: global,
@@ -229,6 +233,7 @@ impl ServerState {
             last_heartbeat: Instant::now(),
             timeout_secs: req.timeout_secs,
             last_interaction: None,
+            assigned_package: assigned_package.clone(),
         };
         self.screens.insert(req.name.clone(), screen);
 
@@ -238,6 +243,7 @@ impl ServerState {
             width: req.width,
             height: req.height,
             dpi: req.dpi,
+            assigned_package,
         })
     }
 
@@ -269,6 +275,7 @@ impl ServerState {
                 width: s.width,
                 height: s.height,
                 dpi: s.dpi,
+                assigned_package: s.assigned_package.clone(),
             })
             .collect()
     }
@@ -281,6 +288,7 @@ impl ServerState {
             width: s.width,
             height: s.height,
             dpi: s.dpi,
+            assigned_package: s.assigned_package.clone(),
         })
     }
 
@@ -442,9 +450,10 @@ impl ServerState {
         })
     }
 
-    fn launch(&mut self, name: &str, package: &str) -> Result<(), AppError> {
+    fn launch(&mut self, name: &str) -> Result<(), AppError> {
         let screen = self.get_screen_mut(name)?;
         let display_id = screen.display_id;
+        let package = &screen.assigned_package;
 
         let resolve = Command::new("cmd")
             .args(["package", "resolve-activity", "--brief", package])
@@ -492,9 +501,10 @@ impl ServerState {
         Ok(())
     }
 
-    fn open_url(&mut self, name: &str, url: &str, package: &str) -> Result<(), AppError> {
+    fn open_url(&mut self, name: &str, url: &str) -> Result<(), AppError> {
         let screen = self.get_screen_mut(name)?;
         let display_id = screen.display_id;
+        let package = &screen.assigned_package;
         let start = Command::new("am")
             .args([
                 "start",
@@ -583,8 +593,9 @@ impl ServerState {
         }
     }
 
-    fn stop(&mut self, name: &str, package: &str) -> Result<(), AppError> {
-        self.get_screen_mut(name)?;
+    fn stop(&mut self, name: &str) -> Result<(), AppError> {
+        let screen = self.get_screen_mut(name)?;
+        let package = &screen.assigned_package;
 
         let status = Command::new("am")
             .args(["force-stop", package])
@@ -598,8 +609,9 @@ impl ServerState {
         Ok(())
     }
 
-    fn reset(&mut self, name: &str, package: &str) -> Result<(), AppError> {
-        self.get_screen_mut(name)?;
+    fn reset(&mut self, name: &str) -> Result<(), AppError> {
+        let screen = self.get_screen_mut(name)?;
+        let package = &screen.assigned_package;
 
         let output = Command::new("pm")
             .args(["clear", package])
@@ -615,6 +627,48 @@ impl ServerState {
         }
 
         Ok(())
+    }
+}
+
+impl ServerState {
+    fn list_installed_packages(&self, filter: &str) -> Result<std::collections::HashSet<String>, AppError> {
+        let output = Command::new("pm")
+            .args(["list", "packages", filter])
+            .output()
+            .map_err(|e| AppError::new(format!("pm list packages failed: {e}")))?;
+        if !output.status.success() {
+            return Err(AppError::new("pm list packages failed"));
+        }
+        Ok(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|l| l.strip_prefix("package:").map(|s| s.trim().to_string()))
+                .collect(),
+        )
+    }
+
+    fn allocate_from_prefix(
+        &self,
+        prefix: &str,
+        installed_input: &std::collections::HashSet<String>,
+    ) -> Result<String, AppError> {
+        let assigned: std::collections::HashSet<String> = self
+            .screens
+            .values()
+            .map(|s| s.assigned_package.clone())
+            .collect();
+        let mut candidates: Vec<String> = installed_input
+            .iter()
+            .filter(|pkg| pkg.starts_with(prefix))
+            .cloned()
+            .collect();
+        candidates.sort();
+        for candidate in candidates {
+            if !assigned.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        Err(AppError::new("no free package available with given prefix"))
     }
 }
 
@@ -803,10 +857,9 @@ async fn launch(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Query(query): Query<NoWaitQuery>,
-    Json(req): Json<LaunchRequest>,
 ) -> Result<Response, AppError> {
     let mut guard = state.lock().await;
-    guard.launch(&name, &req.package)?;
+    guard.launch(&name)?;
     let waited_ms = if query.no_wait {
         0
     } else {
@@ -824,18 +877,16 @@ async fn launch(
 async fn stop(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(req): Json<StopRequest>,
 ) -> Result<StatusCode, AppError> {
-    state.lock().await.stop(&name, &req.package)?;
+    state.lock().await.stop(&name)?;
     Ok(StatusCode::OK)
 }
 
 async fn reset(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(req): Json<StopRequest>,
 ) -> Result<StatusCode, AppError> {
-    state.lock().await.reset(&name, &req.package)?;
+    state.lock().await.reset(&name)?;
     Ok(StatusCode::OK)
 }
 
@@ -852,7 +903,7 @@ async fn open_url(
     Path(name): Path<String>,
     Json(req): Json<OpenUrlRequest>,
 ) -> Result<StatusCode, AppError> {
-    state.lock().await.open_url(&name, &req.url, &req.package)?;
+    state.lock().await.open_url(&name, &req.url)?;
     Ok(StatusCode::OK)
 }
 

@@ -15,8 +15,11 @@ mod types;
 #[derive(FromArgs)]
 struct Cli {
     /// screen name
-    #[argh(option, default = "String::from(\"default\")")]
+    #[argh(option, default = "default_screen_from_env()")]
     screen: String,
+    /// bind package or prefix at screen creation, e.g. com.fedi.dev or com.fedi.dev17
+    #[argh(option, default = "default_package_from_env()")]
+    package: String,
 
     #[argh(subcommand)]
     command: Command,
@@ -116,13 +119,10 @@ struct KeyCmd {
     keycode: i32,
 }
 
-/// launch package
+/// launch the bound package
 #[derive(FromArgs)]
 #[argh(subcommand, name = "launch")]
 struct LaunchCmd {
-    /// package name
-    #[argh(option)]
-    package: Option<String>,
     /// skip waiting for idle after launch
     #[argh(switch)]
     no_wait: bool,
@@ -132,18 +132,12 @@ struct LaunchCmd {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "stop")]
 struct StopCmd {
-    /// package name
-    #[argh(option)]
-    package: Option<String>,
 }
 
 /// clear app data (pm clear)
 #[derive(FromArgs)]
 #[argh(subcommand, name = "reset")]
 struct ResetCmd {
-    /// package name
-    #[argh(option)]
-    package: Option<String>,
 }
 
 /// open URL in package
@@ -152,9 +146,6 @@ struct ResetCmd {
 struct OpenUrlCmd {
     #[argh(positional)]
     url: String,
-    /// package name
-    #[argh(option)]
-    package: Option<String>,
 }
 
 /// wait for UI to become idle
@@ -184,17 +175,12 @@ struct InstallCmd {}
 #[argh(subcommand, name = "version")]
 struct VersionCmd {}
 
-fn get_package(pkg: Option<String>) -> Result<String> {
-    pkg.or_else(|| std::env::var("ANDY_PACKAGE").ok())
-        .ok_or_else(|| anyhow::anyhow!("--package or ANDY_PACKAGE required"))
-}
-
 /// Check if the server is reachable; if not, auto-start it.
 /// Also ensures the screen exists (saving a round-trip).
-async fn ensure_server(socket: &Path, screen: &str) -> Result<Client> {
+async fn ensure_server(socket: &Path, screen: &str, package: &str) -> Result<Client> {
     if socket.exists() {
         let client = Client::new(socket.to_path_buf());
-        if client.ensure_screen(screen).await.is_ok() {
+        if client.ensure_screen(screen, package).await.is_ok() {
             return Ok(client);
         }
         eprintln!("debug: socket exists but server is not responding, restarting...");
@@ -209,7 +195,7 @@ async fn ensure_server(socket: &Path, screen: &str) -> Result<Client> {
     let mut delay_ms = 1u64;
     let mut total_ms = 0u64;
     loop {
-        if client.ensure_screen(screen).await.is_ok() {
+        if client.ensure_screen(screen, package).await.is_ok() {
             eprintln!("debug: server ready after {total_ms}ms");
             return Ok(client);
         }
@@ -220,6 +206,14 @@ async fn ensure_server(socket: &Path, screen: &str) -> Result<Client> {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         total_ms += delay_ms;
     }
+}
+
+fn default_screen_from_env() -> String {
+    std::env::var("ANDY_SCREEN").unwrap_or_else(|_| String::from("default"))
+}
+
+fn default_package_from_env() -> String {
+    std::env::var("ANDY_PACKAGE").unwrap_or_default()
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -253,7 +247,11 @@ async fn main() -> Result<()> {
     }
 
     let screen = &cli.screen;
-    let client = ensure_server(&socket, screen).await?;
+    let package = cli.package.clone();
+    if package.is_empty() {
+        bail!("--package or ANDY_PACKAGE required to bind at screen creation (full or prefix)");
+    }
+    let client = ensure_server(&socket, screen, &package).await?;
 
     match cli.command {
         Command::Info(_) => {
@@ -310,25 +308,21 @@ async fn main() -> Result<()> {
             client.key(screen, cmd.keycode).await?;
         }
         Command::Launch(cmd) => {
-            let package = get_package(cmd.package)?;
-            let wait_ms = client.launch(screen, &package, cmd.no_wait).await?;
+            let wait_ms = client.launch(screen, cmd.no_wait).await?;
             if let Some(ms) = wait_ms {
                 if ms > 0 {
                     eprintln!("note: waited {ms}ms for idle");
                 }
             }
         }
-        Command::Stop(cmd) => {
-            let package = get_package(cmd.package)?;
-            client.stop(screen, &package).await?;
+        Command::Stop(_) => {
+            client.stop(screen).await?;
         }
-        Command::Reset(cmd) => {
-            let package = get_package(cmd.package)?;
-            client.reset(screen, &package).await?;
+        Command::Reset(_) => {
+            client.reset(screen).await?;
         }
         Command::OpenUrl(cmd) => {
-            let package = get_package(cmd.package)?;
-            client.open_url(screen, &cmd.url, &package).await?;
+            client.open_url(screen, &cmd.url).await?;
         }
         Command::WaitForIdle(cmd) => {
             client
