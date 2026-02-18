@@ -84,6 +84,9 @@ struct TapCmd {
     /// skip waiting for idle after tap
     #[argh(switch)]
     no_wait: bool,
+    /// retry finding the node up to N times (waiting for idle between attempts)
+    #[argh(option, default = "3")]
+    tries: u32,
 }
 
 /// swipe gesture
@@ -283,11 +286,23 @@ async fn main() -> Result<()> {
                 let y: f32 = y_str.parse()?;
                 client.tap(screen, x, y, cmd.no_wait).await?
             } else {
-                let (tree, _) = client.a11y(screen, true).await?;
-                let node = a11y::find_node(&tree, &cmd.target)
+                let tries = cmd.tries.max(1);
+                let mut coords = None;
+                for attempt in 1..=tries {
+                    let (tree, _) = client.a11y(screen, true).await?;
+                    if let Some(node) = a11y::find_node(&tree, &cmd.target) {
+                        let x = (node.bounds.left + node.bounds.right) as f32 / 2.0;
+                        let y = (node.bounds.top + node.bounds.bottom) as f32 / 2.0;
+                        coords = Some((x, y));
+                        break;
+                    }
+                    if attempt < tries {
+                        eprintln!("note: node \"{}\" not found, retrying ({}/{})", cmd.target, attempt, tries);
+                        client.wait_for_idle(screen, 500, 5000).await?;
+                    }
+                }
+                let (x, y) = coords
                     .ok_or_else(|| anyhow::anyhow!("node not found: \"{}\"", cmd.target))?;
-                let x = (node.bounds.left + node.bounds.right) as f32 / 2.0;
-                let y = (node.bounds.top + node.bounds.bottom) as f32 / 2.0;
                 client.tap(screen, x, y, cmd.no_wait).await?
             };
             if let Some(ms) = wait_ms {

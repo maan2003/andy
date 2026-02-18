@@ -142,12 +142,6 @@ fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, AppError
 }
 
 impl ServerState {
-    fn get_screen(&self, name: &str) -> Result<&VirtualScreen, AppError> {
-        self.screens
-            .get(name)
-            .ok_or_else(|| AppError::not_found(format!("screen {name} not found")))
-    }
-
     fn get_screen_mut(&mut self, name: &str) -> Result<&mut VirtualScreen, AppError> {
         let screen = self
             .screens
@@ -280,8 +274,8 @@ impl ServerState {
             .collect()
     }
 
-    fn screen_info(&self, name: &str) -> Result<ScreenInfo, AppError> {
-        let s = self.get_screen(name)?;
+    fn screen_info(&mut self, name: &str) -> Result<ScreenInfo, AppError> {
+        let s = self.get_screen_mut(name)?;
         Ok(ScreenInfo {
             name: name.to_string(),
             display_id: s.display_id,
@@ -293,7 +287,7 @@ impl ServerState {
     }
 
     fn screenshot(&mut self, name: &str) -> Result<Vec<u8>, AppError> {
-        let screen = self.get_screen(name)?;
+        let screen = self.get_screen_mut(name)?;
         let width = screen.width as u32;
         let height = screen.height as u32;
         let instance = screen.instance.clone();
@@ -726,7 +720,7 @@ fn call_instance_void(
 }
 
 fn auto_wait_for_idle(guard: &mut ServerState, name: &str) -> Result<u64, AppError> {
-    if let Some(last_interaction) = guard.get_screen(name)?.last_interaction {
+    if let Some(last_interaction) = guard.get_screen_mut(name)?.last_interaction {
         let elapsed = last_interaction.elapsed();
         let global_timeout = std::time::Duration::from_millis(2500).saturating_sub(elapsed);
         if !global_timeout.is_zero() {
