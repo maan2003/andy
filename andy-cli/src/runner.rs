@@ -12,23 +12,14 @@ pub fn start(socket_path: &Path) -> Result<()> {
     let device_dir = DEVICE_DIR.to_string();
 
     // Check that we're talking to a virtual device
-    let virtual_check = Command::new("adb")
-        .args(["shell", "getprop", "ro.hardware.virtual_device"])
-        .output()
-        .context("failed to run adb shell getprop")?;
-    if !virtual_check.status.success() {
-        bail!("adb shell getprop failed (is a device connected?)");
-    }
-    let prop = String::from_utf8_lossy(&virtual_check.stdout)
-        .trim()
-        .to_string();
-    if prop != "1" {
+    let is_virtual = adb_getprop("ro.hardware.virtual_device")? == "1"
+        || adb_getprop("ro.kernel.qemu")? == "1";
+    if !is_virtual {
         eprintln!("###########################################################");
-        eprintln!("#  WARNING: ro.hardware.virtual_device is not set to 1    #");
-        eprintln!("#  This does not appear to be a virtual device!           #");
+        eprintln!("#  WARNING: This does not appear to be a virtual device!  #");
         eprintln!("#  Refusing to continue to protect physical devices.      #");
         eprintln!("###########################################################");
-        bail!("connected device is not a virtual device (ro.hardware.virtual_device={prop:?})");
+        bail!("connected device is not a virtual device");
     }
 
     let so_bytes = select_so()?;
@@ -141,12 +132,19 @@ fn run(cmd: &str, args: &[&str], label: &str) -> Result<()> {
     Ok(())
 }
 
-fn device_arch() -> Result<String> {
+fn adb_getprop(prop: &str) -> Result<String> {
     let output = Command::new("adb")
-        .args(["shell", "getprop", "ro.product.cpu.abi"])
+        .args(["shell", "getprop", prop])
         .output()
-        .context("failed to query device ABI")?;
-    let abi = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        .with_context(|| format!("failed to run adb shell getprop {prop}"))?;
+    if !output.status.success() {
+        bail!("adb shell getprop {prop} failed (is a device connected?)");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn device_arch() -> Result<String> {
+    let abi = adb_getprop("ro.product.cpu.abi")?;
     match abi.as_str() {
         "x86_64" => Ok("x86_64".into()),
         "arm64-v8a" => Ok("aarch64".into()),
