@@ -2,7 +2,7 @@
 
 ## Background services
 
-These should be running before proceeding. Launch each as a background task using the Bash tool with `run_in_background: true`.
+These should be running before proceeding. Launch task using background/async shell info. NOTE: don't use nohup 
 
 ### Cuttlefish
 
@@ -21,6 +21,10 @@ env -C ../fedi direnv exec . ./scripts/bridge/run-remote.sh --with-devfed
 ```
 env -C ../fedi direnv exec . env -C ui/native yarn start
 ```
+
+## Shutdown
+
+Use your tools to kill/ctrl-c the task you started.
 
 ## Device connection
 
