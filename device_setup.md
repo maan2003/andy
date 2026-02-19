@@ -2,12 +2,12 @@
 
 ## Background services
 
-These should be running before proceeding. Launch each as a background task using the Bash tool with `run_in_background: true`.
+These should be running before proceeding. Launch task using background/async shell info. NOTE: don't use nohup 
 
 ### Cuttlefish
 
 ```
-env -C ../cuttlefish-nix2 ./result/bin/launch_cvd --enable_tap_devices=false --adb_mode=native_vsock
+env -C ../cuttlefish-nix2 env -u LD_PRELOAD -u LD_LIBRARY_PATH ./result/bin/launch_cvd --enable_tap_devices=false --adb_mode=native_vsock
 ```
 
 ### Remote bridge
@@ -21,6 +21,10 @@ env -C ../fedi direnv exec . ./scripts/bridge/run-remote.sh --with-devfed
 ```
 env -C ../fedi direnv exec . env -C ui/native yarn start
 ```
+
+## Shutdown
+
+Use your tools to kill/ctrl-c the task you started.
 
 ## Device connection
 
