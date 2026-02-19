@@ -28,7 +28,7 @@ struct VirtualScreen {
 }
 
 struct ServerState {
-    jvm: JavaVM,
+    jvm: Arc<JavaVM>,
     screen_class: GlobalRef,
     screens: HashMap<String, VirtualScreen>,
     a11y_bridge: GlobalRef,
@@ -525,35 +525,9 @@ impl ServerState {
         Ok(())
     }
 
-    fn wait_for_idle(
-        &mut self,
-        name: &str,
-        idle_timeout_ms: i64,
-        global_timeout_ms: i64,
-    ) -> Result<bool, AppError> {
+    fn wait_for_idle_args(&mut self, name: &str) -> Result<(Arc<JavaVM>, GlobalRef), AppError> {
         self.get_screen_mut(name)?;
-        let bridge = self.a11y_bridge.clone();
-        self.with_env(|env| {
-            let obj: &JObject = bridge.as_obj();
-            let result = env
-                .call_method(
-                    obj,
-                    "waitForIdle",
-                    "(JJ)Z",
-                    &[
-                        JValue::Long(idle_timeout_ms),
-                        JValue::Long(global_timeout_ms),
-                    ],
-                )
-                .map_err(|e| {
-                    if let Some(exc_msg) = get_exception_message(env) {
-                        AppError::new(format!("waitForIdle call failed: {exc_msg}"))
-                    } else {
-                        AppError::new(format!("waitForIdle call failed: {e}"))
-                    }
-                })?;
-            Ok(result.z().unwrap_or(false))
-        })
+        Ok((self.jvm.clone(), self.a11y_bridge.clone()))
     }
 
     fn heartbeat(&mut self, name: &str) -> Result<(), AppError> {
@@ -719,17 +693,72 @@ fn call_instance_void(
     Ok(())
 }
 
-fn auto_wait_for_idle(guard: &mut ServerState, name: &str) -> Result<u64, AppError> {
-    if let Some(last_interaction) = guard.get_screen_mut(name)?.last_interaction {
-        let elapsed = last_interaction.elapsed();
-        let global_timeout = std::time::Duration::from_millis(2500).saturating_sub(elapsed);
-        if !global_timeout.is_zero() {
-            let wait_start = Instant::now();
-            guard.wait_for_idle(name, 750, global_timeout.as_millis() as i64)?;
-            return Ok(wait_start.elapsed().as_millis() as u64);
+fn jni_wait_for_idle(
+    jvm: &JavaVM,
+    bridge: &GlobalRef,
+    idle_timeout_ms: i64,
+    global_timeout_ms: i64,
+) -> Result<bool, AppError> {
+    let mut env = jvm
+        .attach_current_thread()
+        .map_err(|e| AppError::new(format!("attach_current_thread failed: {e}")))?;
+    let obj: &JObject = bridge.as_obj();
+    let result = env
+        .call_method(
+            obj,
+            "waitForIdle",
+            "(JJ)Z",
+            &[
+                JValue::Long(idle_timeout_ms),
+                JValue::Long(global_timeout_ms),
+            ],
+        )
+        .map_err(|e| {
+            if let Some(exc_msg) = get_exception_message(&mut env) {
+                AppError::new(format!("waitForIdle call failed: {exc_msg}"))
+            } else {
+                AppError::new(format!("waitForIdle call failed: {e}"))
+            }
+        })?;
+    Ok(result.z().unwrap_or(false))
+}
+
+async fn spawn_wait_for_idle(
+    jvm: Arc<JavaVM>,
+    bridge: GlobalRef,
+    idle_timeout_ms: i64,
+    global_timeout_ms: i64,
+) -> Result<bool, AppError> {
+    tokio::task::spawn_blocking(move || {
+        jni_wait_for_idle(&jvm, &bridge, idle_timeout_ms, global_timeout_ms)
+    })
+    .await
+    .map_err(|e| AppError::new(format!("spawn_blocking failed: {e}")))?
+}
+
+async fn auto_wait_for_idle(state: &AppState, name: &str) -> Result<u64, AppError> {
+    let args = {
+        let mut guard = state.lock().await;
+        let last_interaction = guard.get_screen_mut(name)?.last_interaction;
+        if let Some(last_interaction) = last_interaction {
+            let elapsed = last_interaction.elapsed();
+            let global_timeout = std::time::Duration::from_millis(2500).saturating_sub(elapsed);
+            if !global_timeout.is_zero() {
+                Some((guard.wait_for_idle_args(name)?, global_timeout))
+            } else {
+                None
+            }
+        } else {
+            None
         }
+    };
+    if let Some(((jvm, bridge), global_timeout)) = args {
+        let wait_start = Instant::now();
+        spawn_wait_for_idle(jvm, bridge, 750, global_timeout.as_millis() as i64).await?;
+        Ok(wait_start.elapsed().as_millis() as u64)
+    } else {
+        Ok(0)
     }
-    Ok(0)
 }
 
 // --- Route handlers ---
@@ -767,13 +796,12 @@ async fn screenshot(
     Path(name): Path<String>,
     Query(query): Query<NoWaitQuery>,
 ) -> Result<Response, AppError> {
-    let mut guard = state.lock().await;
     let waited_ms = if query.no_wait {
         0
     } else {
-        auto_wait_for_idle(&mut guard, &name)?
+        auto_wait_for_idle(&state, &name).await?
     };
-    let jpeg = guard.screenshot(&name)?;
+    let jpeg = state.lock().await.screenshot(&name)?;
     let mut response = ([(header::CONTENT_TYPE, "image/jpeg")], jpeg).into_response();
     response
         .headers_mut()
@@ -786,13 +814,12 @@ async fn a11y(
     Path(name): Path<String>,
     Query(query): Query<NoWaitQuery>,
 ) -> Result<Response, AppError> {
-    let mut guard = state.lock().await;
     let waited_ms = if query.no_wait {
         0
     } else {
-        auto_wait_for_idle(&mut guard, &name)?
+        auto_wait_for_idle(&state, &name).await?
     };
-    let json = guard.accessibility_tree(&name)?;
+    let json = state.lock().await.accessibility_tree(&name)?;
     let mut response = ([(header::CONTENT_TYPE, "application/json")], json).into_response();
     response
         .headers_mut()
@@ -806,12 +833,11 @@ async fn tap(
     Query(query): Query<NoWaitQuery>,
     Json(req): Json<TapRequest>,
 ) -> Result<Response, AppError> {
-    let mut guard = state.lock().await;
-    guard.tap(&name, req.x, req.y)?;
+    state.lock().await.tap(&name, req.x, req.y)?;
     let waited_ms = if query.no_wait {
         0
     } else {
-        auto_wait_for_idle(&mut guard, &name)?
+        auto_wait_for_idle(&state, &name).await?
     };
     let mut response = StatusCode::OK.into_response();
     response
@@ -852,14 +878,21 @@ async fn launch(
     Path(name): Path<String>,
     Query(query): Query<NoWaitQuery>,
 ) -> Result<Response, AppError> {
-    let mut guard = state.lock().await;
-    guard.launch(&name)?;
-    let waited_ms = if query.no_wait {
-        0
-    } else {
+    let wait_args = {
+        let mut guard = state.lock().await;
+        guard.launch(&name)?;
+        if query.no_wait {
+            None
+        } else {
+            Some(guard.wait_for_idle_args(&name)?)
+        }
+    };
+    let waited_ms = if let Some((jvm, bridge)) = wait_args {
         let wait_start = Instant::now();
-        guard.wait_for_idle(&name, 5000, 30000)?;
+        spawn_wait_for_idle(jvm, bridge, 5000, 30000).await?;
         wait_start.elapsed().as_millis() as u64
+    } else {
+        0
     };
     let mut response = StatusCode::OK.into_response();
     response
@@ -906,10 +939,8 @@ async fn wait_for_idle(
     Path(name): Path<String>,
     Json(req): Json<WaitForIdleRequest>,
 ) -> Result<StatusCode, AppError> {
-    state
-        .lock()
-        .await
-        .wait_for_idle(&name, req.idle_timeout_ms, req.global_timeout_ms)?;
+    let (jvm, bridge) = state.lock().await.wait_for_idle_args(&name)?;
+    spawn_wait_for_idle(jvm, bridge, req.idle_timeout_ms, req.global_timeout_ms).await?;
     Ok(StatusCode::OK)
 }
 
@@ -985,7 +1016,7 @@ pub extern "system" fn Java_com_coordinator_Main_nativeRun(
         .new_global_ref(&a11y_obj)
         .expect("create global ref for AccessibilityBridge");
 
-    let jvm = env.get_java_vm().expect("get JavaVM");
+    let jvm = Arc::new(env.get_java_vm().expect("get JavaVM"));
     let state: AppState = Arc::new(tokio::sync::Mutex::new(ServerState {
         jvm,
         screen_class: screen_class_global,
