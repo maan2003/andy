@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "andy-cli"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "argh",
@@ -200,7 +200,7 @@ checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
 
 [[package]]
 name = "coordinator"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "jni",
