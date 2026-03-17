@@ -7,19 +7,29 @@ use crate::assets;
 
 const DEVICE_DIR: &str = "/data/local/tests/coordinator";
 const DEVICE_PORT: u16 = 21632;
+const PHYSICAL_DEVICE_BYPASS_ENV: &str = "ANDY_PUT_RCE_ON_MY_PHONE";
 
 pub fn start(socket_path: &Path) -> Result<()> {
     let device_dir = DEVICE_DIR.to_string();
 
-    // Check that we're talking to a virtual device
+    // Refuse to deploy to physical devices unless the caller opts into the bypass.
     let is_virtual = adb_getprop("ro.hardware.virtual_device")? == "1"
         || adb_getprop("ro.kernel.qemu")? == "1";
-    if !is_virtual {
+    let bypass_virtual_device_check = std::env::var(PHYSICAL_DEVICE_BYPASS_ENV)
+        .ok()
+        .is_some_and(|x| x == "1");
+    if !is_virtual && !bypass_virtual_device_check {
         eprintln!("###########################################################");
         eprintln!("#  WARNING: This does not appear to be a virtual device!  #");
         eprintln!("#  Refusing to continue to protect physical devices.      #");
         eprintln!("###########################################################");
         bail!("connected device is not a virtual device");
+    }
+    if !is_virtual && bypass_virtual_device_check {
+        eprintln!(
+            "warning: bypassing virtual device check because {} is set",
+            PHYSICAL_DEVICE_BYPASS_ENV
+        );
     }
 
     let so_bytes = select_so()?;
