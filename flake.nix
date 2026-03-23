@@ -102,7 +102,7 @@
           linker = mkLldDarwinLinker target;
         in andyCraneLib.buildPackage {
           pname = "andy-${target}";
-          version = "0.2.0";
+          version = "0.5.0";
           inherit src;
           cargoExtraArgs = "--package andy-cli";
           strictDeps = true;
@@ -124,7 +124,7 @@
           let
             craneLib = craneLib'.overrideArgs {
               pname = "coordinator";
-              version = "0.2.0";
+              version = "0.5.0";
               inherit src;
             };
           in {
@@ -164,7 +164,7 @@
           default = andy;
           andy = andyCraneLib.buildPackage {
             pname = "andy";
-            version = "0.2.0";
+            version = "0.5.0";
             inherit src;
             cargoExtraArgs = "--package andy-cli";
             strictDeps = true;
@@ -179,7 +179,7 @@
 
           andy-aarch64-linux = andyCraneLib.buildPackage {
             pname = "andy-aarch64-linux";
-            version = "0.2.0";
+            version = "0.5.0";
             inherit src;
             cargoExtraArgs = "--package andy-cli";
             strictDeps = true;
