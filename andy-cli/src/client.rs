@@ -50,14 +50,14 @@ impl Client {
         Ok(())
     }
 
-    pub async fn ensure_screen(&self, name: &str, package: &str) -> Result<()> {
+    pub async fn ensure_screen(&self, name: &str, package: &str, width: i32, height: i32, dpi: i32) -> Result<()> {
         self.post_json(
             "/screens",
             &CreateScreenRequest {
                 name: name.to_string(),
-                width: 1080,
-                height: 1920,
-                dpi: 240,
+                width,
+                height,
+                dpi,
                 timeout_secs: 300,
                 package: package.to_string(),
             },

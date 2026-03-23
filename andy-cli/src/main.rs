@@ -20,6 +20,9 @@ struct Cli {
     /// bind package or prefix at screen creation, e.g. com.fedi.dev or com.fedi.dev17
     #[argh(option, default = "default_package_from_env()")]
     package: String,
+    /// display size as WIDTHxHEIGHT@DPI (env: ANDY_DISPLAY_SIZE, default: 1180x2556@460)
+    #[argh(option, default = "default_display_size_from_env()")]
+    display_size: String,
 
     #[argh(subcommand)]
     command: Command,
@@ -197,10 +200,10 @@ struct LogDaemonCmd {
 
 /// Check if the server is reachable; if not, auto-start it.
 /// Also ensures the screen exists (saving a round-trip).
-async fn ensure_server(socket: &Path, screen: &str, package: &str) -> Result<Client> {
+async fn ensure_server(socket: &Path, screen: &str, package: &str, width: i32, height: i32, dpi: i32) -> Result<Client> {
     if socket.exists() {
         let client = Client::new(socket.to_path_buf());
-        if client.ensure_screen(screen, package).await.is_ok() {
+        if client.ensure_screen(screen, package, width, height, dpi).await.is_ok() {
             return Ok(client);
         }
         eprintln!("debug: socket exists but server is not responding, restarting...");
@@ -215,7 +218,7 @@ async fn ensure_server(socket: &Path, screen: &str, package: &str) -> Result<Cli
     let mut delay_ms = 1u64;
     let mut total_ms = 0u64;
     loop {
-        if client.ensure_screen(screen, package).await.is_ok() {
+        if client.ensure_screen(screen, package, width, height, dpi).await.is_ok() {
             eprintln!("debug: server ready after {total_ms}ms");
             return Ok(client);
         }
@@ -234,6 +237,18 @@ fn default_screen_from_env() -> String {
 
 fn default_package_from_env() -> String {
     std::env::var("ANDY_PACKAGE").unwrap_or_default()
+}
+
+fn default_display_size_from_env() -> String {
+    std::env::var("ANDY_DISPLAY_SIZE").unwrap_or_else(|_| String::from("1180x2556@460"))
+}
+
+fn parse_display_size(spec: &str) -> Result<(i32, i32, i32)> {
+    let (dims, dpi) = spec.split_once('@')
+        .ok_or_else(|| anyhow::anyhow!("invalid display size, expected WIDTHxHEIGHT@DPI: {spec}"))?;
+    let (w, h) = dims.split_once('x')
+        .ok_or_else(|| anyhow::anyhow!("invalid display size, expected WIDTHxHEIGHT@DPI: {spec}"))?;
+    Ok((w.parse()?, h.parse()?, dpi.parse()?))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -274,7 +289,8 @@ async fn main() -> Result<()> {
     if package.is_empty() {
         bail!("--package or ANDY_PACKAGE required to bind at screen creation (full or prefix)");
     }
-    let client = ensure_server(&socket, screen, &package).await?;
+    let (width, height, dpi) = parse_display_size(&cli.display_size)?;
+    let client = ensure_server(&socket, screen, &package, width, height, dpi).await?;
 
     match cli.command {
         Command::Info(_) => {
