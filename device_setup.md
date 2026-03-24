@@ -10,18 +10,6 @@ These should be running before proceeding. Launch task using background/async sh
 env -C ../cuttlefish-nix2 env -u LD_PRELOAD -u LD_LIBRARY_PATH ./result/bin/launch_cvd --enable_tap_devices=false --adb_mode=native_vsock
 ```
 
-### Remote bridge
-
-```
-env -C ../fedi direnv exec . ./scripts/bridge/run-remote.sh --with-devfed
-```
-
-### Metro bundler
-
-```
-env -C ../fedi direnv exec . env -C ui/native yarn start
-```
-
 ## Shutdown
 
 Use your tools to kill/ctrl-c the task you started.
@@ -38,14 +26,6 @@ adb connect vsock:3:5555
 
 ```
 adb shell cmd connectivity airplane-mode enable
-```
-
-## Installing Fedi
-
-The APK is at `../fedi/ui/native/android/app/build/outputs/apk/production/debug/app-production-debug.apk`. Install with:
-
-```
-adb install ../fedi/ui/native/android/app/build/outputs/apk/production/debug/app-production-debug.apk
 ```
 
 ### Setting metro host
