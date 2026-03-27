@@ -136,14 +136,12 @@ struct LaunchCmd {
 /// stop package
 #[derive(FromArgs)]
 #[argh(subcommand, name = "stop")]
-struct StopCmd {
-}
+struct StopCmd {}
 
 /// clear app data (pm clear)
 #[derive(FromArgs)]
 #[argh(subcommand, name = "reset")]
-struct ResetCmd {
-}
+struct ResetCmd {}
 
 /// open URL in package
 #[derive(FromArgs)]
@@ -317,12 +315,15 @@ async fn main() -> Result<()> {
                         break;
                     }
                     if attempt < tries {
-                        eprintln!("note: node \"{}\" not found, retrying ({}/{})", cmd.target, attempt, tries);
+                        eprintln!(
+                            "note: node \"{}\" not found, retrying ({}/{})",
+                            cmd.target, attempt, tries
+                        );
                         client.wait_for_idle(screen, 500, 5000).await?;
                     }
                 }
-                let (x, y) = coords
-                    .ok_or_else(|| anyhow::anyhow!("node not found: \"{}\"", cmd.target))?;
+                let (x, y) =
+                    coords.ok_or_else(|| anyhow::anyhow!("node not found: \"{}\"", cmd.target))?;
                 client.tap(screen, x, y, cmd.no_wait).await?
             };
             if let Some(ms) = wait_ms {
@@ -367,8 +368,8 @@ async fn main() -> Result<()> {
         Command::SyncLogsToFile(_) => {
             let info = client.info(screen).await?;
             let uid = resolve_package_uid(&info.assigned_package)?;
-            let state_dir = PathBuf::from(std::env::var("HOME").expect("HOME not set"))
-                .join(".local/state");
+            let state_dir =
+                PathBuf::from(std::env::var("HOME").expect("HOME not set")).join(".local/state");
             let log_file = state_dir.join(format!("andy-log-{}.txt", std::process::id()));
             let exe = std::env::current_exe().context("failed to get current exe")?;
             use std::os::unix::process::CommandExt;
@@ -378,13 +379,18 @@ async fn main() -> Result<()> {
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .pre_exec(|| { libc::setsid(); Ok(()) })
+                    .pre_exec(|| {
+                        libc::setsid();
+                        Ok(())
+                    })
                     .spawn()
                     .context("failed to spawn log daemon")?;
             }
             println!("Logging to {}", log_file.display());
         }
-        Command::Start(_) | Command::Install(_) | Command::Version(_) | Command::LogDaemon(_) => unreachable!(),
+        Command::Start(_) | Command::Install(_) | Command::Version(_) | Command::LogDaemon(_) => {
+            unreachable!()
+        }
     }
 
     Ok(())
@@ -420,7 +426,8 @@ fn run_log_daemon(uid: u32, log_file: &Path) -> Result<()> {
             break;
         }
 
-        let idle = fs::metadata(log_file).ok()
+        let idle = fs::metadata(log_file)
+            .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| SystemTime::now().duration_since(t).ok())
             .unwrap_or(Duration::ZERO);

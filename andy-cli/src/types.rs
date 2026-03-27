@@ -45,7 +45,6 @@ pub struct KeyRequest {
     pub keycode: i32,
 }
 
-
 #[derive(Serialize)]
 pub struct OpenUrlRequest {
     pub url: String,

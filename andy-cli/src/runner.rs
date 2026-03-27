@@ -12,8 +12,8 @@ pub fn start(socket_path: &Path) -> Result<()> {
     let device_dir = DEVICE_DIR.to_string();
 
     // Check that we're talking to a virtual device
-    let is_virtual = adb_getprop("ro.hardware.virtual_device")? == "1"
-        || adb_getprop("ro.kernel.qemu")? == "1";
+    let is_virtual =
+        adb_getprop("ro.hardware.virtual_device")? == "1" || adb_getprop("ro.kernel.qemu")? == "1";
     if !is_virtual {
         eprintln!("###########################################################");
         eprintln!("#  WARNING: This does not appear to be a virtual device!  #");

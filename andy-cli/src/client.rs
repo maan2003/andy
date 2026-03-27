@@ -34,7 +34,6 @@ impl Client {
         Ok(resp.bytes().await?)
     }
 
-
     async fn post_json(&self, path: &str, json: &impl serde::Serialize) -> Result<()> {
         let resp = self
             .http
@@ -183,7 +182,11 @@ impl Client {
         if no_wait {
             url.push_str("?no_wait=true");
         }
-        let resp = self.http.post(format!("http://localhost{url}")).send().await?;
+        let resp = self
+            .http
+            .post(format!("http://localhost{url}"))
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -198,19 +201,29 @@ impl Client {
     }
 
     pub async fn stop(&self, screen: &str) -> Result<()> {
-        let _ = self.http.post(format!("http://localhost/screens/{screen}/stop")).send().await?;
+        let _ = self
+            .http
+            .post(format!("http://localhost/screens/{screen}/stop"))
+            .send()
+            .await?;
         Ok(())
     }
 
     pub async fn reset(&self, screen: &str) -> Result<()> {
-        let _ = self.http.post(format!("http://localhost/screens/{screen}/reset")).send().await?;
+        let _ = self
+            .http
+            .post(format!("http://localhost/screens/{screen}/reset"))
+            .send()
+            .await?;
         Ok(())
     }
 
     pub async fn open_url(&self, screen: &str, url: &str) -> Result<()> {
         self.post_json(
             &format!("/screens/{screen}/open-url"),
-            &OpenUrlRequest { url: url.to_string() },
+            &OpenUrlRequest {
+                url: url.to_string(),
+            },
         )
         .await
     }
@@ -230,5 +243,4 @@ impl Client {
         )
         .await
     }
-
 }

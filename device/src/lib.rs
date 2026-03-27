@@ -114,7 +114,6 @@ struct OpenUrlRequest {
     url: String,
 }
 
-
 #[derive(Deserialize)]
 struct WaitForIdleRequest {
     idle_timeout_ms: i64,
@@ -599,7 +598,10 @@ impl ServerState {
 }
 
 impl ServerState {
-    fn list_installed_packages(&self, filter: &str) -> Result<std::collections::HashSet<String>, AppError> {
+    fn list_installed_packages(
+        &self,
+        filter: &str,
+    ) -> Result<std::collections::HashSet<String>, AppError> {
         let output = Command::new("pm")
             .args(["list", "packages", filter])
             .output()
@@ -607,12 +609,10 @@ impl ServerState {
         if !output.status.success() {
             return Err(AppError::new("pm list packages failed"));
         }
-        Ok(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|l| l.strip_prefix("package:").map(|s| s.trim().to_string()))
-                .collect(),
-        )
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|l| l.strip_prefix("package:").map(|s| s.trim().to_string()))
+            .collect())
     }
 
     fn allocate_from_prefix(
