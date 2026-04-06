@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, bail};
 use argh::FromArgs;
+use std::io::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
+use std::time::Duration;
 
 use crate::client::Client;
 
@@ -35,6 +38,9 @@ fn socket_path() -> PathBuf {
 enum Command {
     Info(InfoCmd),
     Screenshot(ScreenshotCmd),
+    RawFrame(RawFrameCmd),
+    StartRecord(StartRecordCmd),
+    StartStream(StartStreamCmd),
     A11y(A11yCmd),
     Tap(TapCmd),
     Swipe(SwipeCmd),
@@ -66,6 +72,37 @@ struct ScreenshotCmd {
     /// skip waiting for idle before screenshot
     #[argh(switch)]
     no_wait: bool,
+}
+
+/// fetch a changed raw RGBA frame and save it to path
+#[derive(FromArgs)]
+#[argh(subcommand, name = "raw-frame")]
+struct RawFrameCmd {
+    #[argh(positional)]
+    path: String,
+    /// skip waiting for idle before fetching frame
+    #[argh(switch)]
+    no_wait: bool,
+}
+
+/// start recording to a video file until Ctrl-C
+#[derive(FromArgs)]
+#[argh(subcommand, name = "start-record")]
+struct StartRecordCmd {
+    #[argh(positional)]
+    path: String,
+    /// output fps for the encoded video
+    #[argh(option, default = "1")]
+    fps: u32,
+}
+
+/// stream H.264/MPEG-TS to stdout until Ctrl-C
+#[derive(FromArgs)]
+#[argh(subcommand, name = "start-stream")]
+struct StartStreamCmd {
+    /// output fps for the encoded stream
+    #[argh(option, default = "1")]
+    fps: u32,
 }
 
 /// print human-readable accessibility tree
@@ -289,6 +326,34 @@ async fn main() -> Result<()> {
             }
             eprintln!("saved screenshot to {}", cmd.path);
         }
+        Command::RawFrame(cmd) => {
+            let frame = client.raw_frame(screen, cmd.no_wait).await?;
+            if let Some(frame) = frame {
+                fs::write(&cmd.path, &frame.data)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "path": cmd.path,
+                        "width": frame.width,
+                        "height": frame.height,
+                        "stride": frame.stride,
+                        "bytes_per_pixel": frame.bytes_per_pixel,
+                        "pixel_format": "rgba8888",
+                        "seq": frame.seq,
+                        "timestamp_ms": frame.timestamp_ms,
+                        "size_bytes": frame.data.len(),
+                    }))?
+                );
+            } else {
+                eprintln!("no new frame available");
+            }
+        }
+        Command::StartRecord(cmd) => {
+            start_record(&client, screen, &cmd).await?;
+        }
+        Command::StartStream(cmd) => {
+            start_stream(&client, screen, &cmd).await?;
+        }
         Command::A11y(cmd) => {
             let (tree, wait_ms) = client.a11y(screen, cmd.no_wait).await?;
             if let Some(ms) = wait_ms {
@@ -393,6 +458,188 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn start_record(client: &Client, screen: &str, cmd: &StartRecordCmd) -> Result<()> {
+    if cmd.fps == 0 {
+        bail!("--fps must be at least 1");
+    }
+
+    eprintln!("waiting for first frame...");
+    let mut last_frame = loop {
+        if let Some(frame) = client.raw_frame(screen, true).await? {
+            break frame;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let mut ffmpeg = ProcessCommand::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgba",
+            "-video_size",
+            &format!("{}x{}", last_frame.width, last_frame.height),
+            "-framerate",
+            &cmd.fps.to_string(),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            &cmd.path,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| "failed to spawn ffmpeg; is it installed?")?;
+
+    let mut ffmpeg_stdin = ffmpeg
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to open ffmpeg stdin"))?;
+
+    eprintln!(
+        "recording {}x{} rgba at {} fps to {} (Ctrl-C to stop)",
+        last_frame.width, last_frame.height, cmd.fps, cmd.path
+    );
+
+    let frame_period = Duration::from_secs_f64(1.0 / cmd.fps as f64);
+    loop {
+        ffmpeg_stdin
+            .write_all(&last_frame.data)
+            .with_context(|| "failed to write frame to ffmpeg")?;
+
+        tokio::select! {
+            ctrl_c = tokio::signal::ctrl_c() => {
+                ctrl_c.with_context(|| "failed to listen for Ctrl-C")?;
+                break;
+            }
+            _ = tokio::time::sleep(frame_period) => {}
+        }
+
+        if let Some(frame) = client.raw_frame(screen, true).await? {
+            if frame.width != last_frame.width || frame.height != last_frame.height {
+                bail!(
+                    "frame size changed from {}x{} to {}x{} during recording",
+                    last_frame.width,
+                    last_frame.height,
+                    frame.width,
+                    frame.height
+                );
+            }
+            last_frame = frame;
+        }
+    }
+
+    drop(ffmpeg_stdin);
+    let status = ffmpeg.wait().with_context(|| "failed to wait for ffmpeg")?;
+    if !status.success() {
+        bail!("ffmpeg exited with status {status}");
+    }
+    eprintln!("saved recording to {}", cmd.path);
+    Ok(())
+}
+
+async fn start_stream(client: &Client, screen: &str, cmd: &StartStreamCmd) -> Result<()> {
+    if cmd.fps == 0 {
+        bail!("--fps must be at least 1");
+    }
+
+    eprintln!("waiting for first frame...");
+    let mut last_frame = loop {
+        if let Some(frame) = client.raw_frame(screen, true).await? {
+            break frame;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let mut ffmpeg = ProcessCommand::new("ffmpeg")
+        .args([
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgba",
+            "-video_size",
+            &format!("{}x{}", last_frame.width, last_frame.height),
+            "-framerate",
+            &cmd.fps.to_string(),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "1",
+            "-f",
+            "mpegts",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| "failed to spawn ffmpeg; is it installed?")?;
+
+    let mut ffmpeg_stdin = ffmpeg
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to open ffmpeg stdin"))?;
+
+    eprintln!(
+        "streaming {}x{} rgba at {} fps as H.264/MPEG-TS on stdout (Ctrl-C to stop)",
+        last_frame.width, last_frame.height, cmd.fps
+    );
+
+    let frame_period = Duration::from_secs_f64(1.0 / cmd.fps as f64);
+    loop {
+        ffmpeg_stdin
+            .write_all(&last_frame.data)
+            .with_context(|| "failed to write frame to ffmpeg")?;
+
+        tokio::select! {
+            ctrl_c = tokio::signal::ctrl_c() => {
+                ctrl_c.with_context(|| "failed to listen for Ctrl-C")?;
+                break;
+            }
+            _ = tokio::time::sleep(frame_period) => {}
+        }
+
+        if let Some(frame) = client.raw_frame(screen, true).await? {
+            if frame.width != last_frame.width || frame.height != last_frame.height {
+                bail!(
+                    "frame size changed from {}x{} to {}x{} during stream",
+                    last_frame.width,
+                    last_frame.height,
+                    frame.width,
+                    frame.height
+                );
+            }
+            last_frame = frame;
+        }
+    }
+
+    drop(ffmpeg_stdin);
+    let status = ffmpeg.wait().with_context(|| "failed to wait for ffmpeg")?;
+    if !status.success() {
+        bail!("ffmpeg exited with status {status}");
+    }
     Ok(())
 }
 

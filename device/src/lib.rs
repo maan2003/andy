@@ -25,6 +25,7 @@ struct VirtualScreen {
     timeout_secs: u64,
     last_interaction: Option<Instant>,
     assigned_package: String,
+    last_raw_frame_seq: u64,
 }
 
 struct ServerState {
@@ -124,6 +125,16 @@ struct WaitForIdleRequest {
 struct NoWaitQuery {
     #[serde(default)]
     no_wait: bool,
+}
+
+#[derive(Serialize)]
+struct RawFrameInfo {
+    width: i32,
+    height: i32,
+    stride: i32,
+    bytes_per_pixel: i32,
+    seq: u64,
+    timestamp_ms: u64,
 }
 
 fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, AppError> {
@@ -227,6 +238,7 @@ impl ServerState {
             timeout_secs: req.timeout_secs,
             last_interaction: None,
             assigned_package: assigned_package.clone(),
+            last_raw_frame_seq: 0,
         };
         self.screens.insert(req.name.clone(), screen);
 
@@ -336,6 +348,59 @@ impl ServerState {
             None => {}
         }
         Ok(screen.last_jpeg.clone().unwrap())
+    }
+
+    fn raw_frame(&mut self, name: &str) -> Result<Option<(RawFrameInfo, Vec<u8>)>, AppError> {
+        let screen = self.get_screen_mut(name)?;
+        let width = screen.width;
+        let height = screen.height;
+        let instance = screen.instance.clone();
+
+        let rgba = self.with_env(|env| {
+            let obj: &JObject = instance.as_obj();
+            let rgba_array: JByteArray = env
+                .call_method(obj, "takeScreenshotRGBA", "()[B", &[])
+                .map_err(|e| {
+                    if let Some(exc_msg) = get_exception_message(env) {
+                        AppError::new(format!("takeScreenshotRGBA call failed: {exc_msg}"))
+                    } else {
+                        AppError::new(format!("takeScreenshotRGBA call failed: {e}"))
+                    }
+                })?
+                .l()
+                .map_err(|e| AppError::new(format!("takeScreenshotRGBA result failed: {e}")))?
+                .into();
+
+            if rgba_array.is_null() {
+                return Ok(None);
+            }
+
+            let bytes = env
+                .convert_byte_array(&rgba_array)
+                .map_err(|e| AppError::new(format!("convert raw frame failed: {e}")))?;
+            Ok(Some(bytes))
+        })?;
+
+        let Some(rgba) = rgba else {
+            return Ok(None);
+        };
+
+        let screen = self.get_screen_mut(name)?;
+        screen.last_raw_frame_seq += 1;
+        Ok(Some((
+            RawFrameInfo {
+                width,
+                height,
+                stride: width * 4,
+                bytes_per_pixel: 4,
+                seq: screen.last_raw_frame_seq,
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| AppError::new(format!("system time failed: {e}")))?
+                    .as_millis() as u64,
+            },
+            rgba,
+        )))
     }
 
     fn tap(&mut self, name: &str, x: f32, y: f32) -> Result<(), AppError> {
@@ -809,6 +874,44 @@ async fn screenshot(
     Ok(response)
 }
 
+async fn raw_frame(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(query): Query<NoWaitQuery>,
+) -> Result<Response, AppError> {
+    let waited_ms = if query.no_wait {
+        0
+    } else {
+        auto_wait_for_idle(&state, &name).await?
+    };
+    let frame = state.lock().await.raw_frame(&name)?;
+    let Some((info, rgba)) = frame else {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        response
+            .headers_mut()
+            .insert("X-Wait-Ms", waited_ms.to_string().parse().unwrap());
+        return Ok(response);
+    };
+
+    let mut response = ([(header::CONTENT_TYPE, "application/octet-stream")], rgba).into_response();
+    let headers = response.headers_mut();
+    headers.insert("X-Wait-Ms", waited_ms.to_string().parse().unwrap());
+    headers.insert("X-Frame-Width", info.width.to_string().parse().unwrap());
+    headers.insert("X-Frame-Height", info.height.to_string().parse().unwrap());
+    headers.insert("X-Frame-Stride", info.stride.to_string().parse().unwrap());
+    headers.insert(
+        "X-Frame-Bytes-Per-Pixel",
+        info.bytes_per_pixel.to_string().parse().unwrap(),
+    );
+    headers.insert("X-Frame-Pixel-Format", "rgba8888".parse().unwrap());
+    headers.insert("X-Frame-Seq", info.seq.to_string().parse().unwrap());
+    headers.insert(
+        "X-Frame-Timestamp-Ms",
+        info.timestamp_ms.to_string().parse().unwrap(),
+    );
+    Ok(response)
+}
+
 async fn a11y(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -1030,6 +1133,7 @@ pub extern "system" fn Java_com_coordinator_Main_nativeRun(
         .route("/debug/screens", get(list_screens))
         .route("/screens/{name}/info", get(screen_info))
         .route("/screens/{name}/screenshot", get(screenshot))
+        .route("/screens/{name}/frame/raw", get(raw_frame))
         .route("/screens/{name}/a11y", get(a11y))
         .route("/screens/{name}/tap", post(tap))
         .route("/screens/{name}/swipe", post(swipe))

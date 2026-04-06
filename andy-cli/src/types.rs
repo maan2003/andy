@@ -20,6 +20,17 @@ pub struct ScreenInfo {
     pub assigned_package: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RawFrame {
+    pub width: i32,
+    pub height: i32,
+    pub stride: i32,
+    pub bytes_per_pixel: i32,
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub data: bytes::Bytes,
+}
+
 #[derive(Serialize)]
 pub struct TapRequest {
     pub x: f32,

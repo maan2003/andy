@@ -92,6 +92,52 @@ impl Client {
         Ok((resp.bytes().await?, wait_ms))
     }
 
+    pub async fn raw_frame(&self, screen: &str, no_wait: bool) -> Result<Option<RawFrame>> {
+        let mut url = format!("/screens/{screen}/frame/raw");
+        if no_wait {
+            url.push_str("?no_wait=true");
+        }
+        let resp = self
+            .http
+            .get(format!("http://localhost{url}"))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            bail!("{url}: {status} {text}");
+        }
+
+        let headers = resp.headers().clone();
+        let parse_i32 = |name: &str| -> Result<i32> {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<i32>().ok())
+                .ok_or_else(|| anyhow::anyhow!("missing or invalid {name} header"))
+        };
+        let parse_u64 = |name: &str| -> Result<u64> {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| anyhow::anyhow!("missing or invalid {name} header"))
+        };
+
+        Ok(Some(RawFrame {
+            width: parse_i32("X-Frame-Width")?,
+            height: parse_i32("X-Frame-Height")?,
+            stride: parse_i32("X-Frame-Stride")?,
+            bytes_per_pixel: parse_i32("X-Frame-Bytes-Per-Pixel")?,
+            seq: parse_u64("X-Frame-Seq")?,
+            timestamp_ms: parse_u64("X-Frame-Timestamp-Ms")?,
+            data: resp.bytes().await?,
+        }))
+    }
+
     pub async fn a11y(&self, screen: &str, no_wait: bool) -> Result<(A11yTree, Option<u64>)> {
         let mut url = format!("/screens/{screen}/a11y");
         if no_wait {
